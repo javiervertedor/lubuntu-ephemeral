@@ -5,43 +5,37 @@ set -euo pipefail
 
 echo "[*] Iniciando limpieza segura al apagar..."
 
-# Variables
 CRYPT_NAME="cryptoram"
 MOUNT_POINT="/mnt/ramdisk"
 TMPFS_MOUNT="/mnt/ramdisk_tmpfs"
 CRYPT_FILE="$TMPFS_MOUNT/ramdisk.luks"
 MAPPED_DEV="/dev/mapper/$CRYPT_NAME"
 
-# 1. Borrar archivos sensibles individuales en el RAM disk con shred
 echo "[*] Borrando archivos sensibles individuales en RAM disk con shred..."
 for file in "$MOUNT_POINT/home/.bash_history" "$MOUNT_POINT/home/.xsession-errors"; do
     [ -f "$file" ] && shred -uz "$file" || true
 done
 
-# 2. Borrar todo el contenido del volumen cifrado en RAM con srm
 echo "[*] Eliminando completamente el contenido del RAM disk con srm..."
-for path in "$MOUNT_POINT"/{home,tmp,var/tmp,var/log,var/cache,var/spool}; do
+for path in "$MOUNT_POINT"/{home,tmp,var/tmp,var/log,var/cache}; do
     [ -d "$path" ] && srm -r "$path" || echo "[!] No se encontró $path para eliminar"
 done
 
-# 3. Desmontar carpetas del sistema montadas desde el RAM disk
-echo "[*] Desmontando directorios del sistema..."
-for dir in /home /tmp /var/tmp /var/log /var/cache /var/spool; do
+echo "[*] Desmontando carpetas del sistema montadas desde el RAM disk..."
+for dir in /home /tmp /var/tmp /var/log /var/cache; do
     if mountpoint -q "$dir"; then
         umount "$dir" || echo "[!] No se pudo desmontar $dir"
     fi
 done
 
-# 4. Remontar los originales como lectura-escritura
-echo "[*] Remontando directorios originales como lectura-escritura..."
-for dir in /home /tmp /var/tmp /var/log /var/cache /var/spool; do
+echo "[*] Remontando carpetas originales como lectura-escritura..."
+for dir in /home /tmp /var/tmp /var/log /var/cache; do
     orig_mount=$(findmnt -n -o SOURCE --target "$dir" || true)
     if [ -n "$orig_mount" ]; then
         mount -o remount,rw "$orig_mount" || echo "[!] No se pudo remount $orig_mount como rw"
     fi
 done
 
-# 5. Cerrar y limpiar volumen cifrado
 echo "[*] Desmontando y cerrando volumen LUKS..."
 if mountpoint -q "$MOUNT_POINT"; then
     umount "$MOUNT_POINT" || echo "[!] No se pudo desmontar $MOUNT_POINT"
@@ -51,23 +45,15 @@ if [ -e "$MAPPED_DEV" ]; then
     cryptsetup luksClose "$CRYPT_NAME" || echo "[!] No se pudo cerrar el volumen LUKS"
 fi
 
-# 6. Borrar contenedor cifrado y desmontar tmpfs
 echo "[*] Eliminando archivo LUKS y desmontando tmpfs..."
-if [ -f "$CRYPT_FILE" ]; then
-    shred -uz "$CRYPT_FILE"
-fi
+[ -f "$CRYPT_FILE" ] && shred -uz "$CRYPT_FILE"
+mountpoint -q "$TMPFS_MOUNT" && umount "$TMPFS_MOUNT"
 
-if mountpoint -q "$TMPFS_MOUNT"; then
-    umount "$TMPFS_MOUNT"
-fi
-
-# 7. Borrar archivos de red
 echo "[*] Borrando archivos de hosts..."
 for file in /etc/hosts /etc/hosts.allow /etc/hosts.deny; do
     [ -f "$file" ] && shred -uz "$file"
 done
 
-# 8. Limpiar caché DNS
 echo "[*] Limpiando caché DNS..."
 if command -v systemd-resolve &> /dev/null; then
     systemd-resolve --flush-caches
@@ -79,7 +65,9 @@ elif command -v dnsmasq &> /dev/null; then
     killall -HUP dnsmasq
 fi
 
-# 9. Liberar RAM y swap
+echo "[*] Borrando contenido de /var/spool en disco (no en RAM)..."
+[ -d /var/spool ] && find /var/spool -type f -exec shred -uz {} +
+
 echo "[*] Limpiando cachés de memoria y swap..."
 sync
 echo 3 > /proc/sys/vm/drop_caches
